@@ -1,9 +1,11 @@
 use serde::{Deserialize, Serialize};
+
 use std::fs::File;
 use std::env;
 use std::io::Read;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::time::Instant;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct Point {
@@ -44,6 +46,10 @@ impl DistanceMap {
         self.num_points as usize
     }
 
+    fn len(&self) -> usize {
+        self.point_count()
+    }
+
     fn get_distance_from_points(&self, point1: &u32, point2: &u32) ->f64 {
         if *point1 == *point2 { return 0.0; }
 
@@ -57,7 +63,8 @@ impl DistanceMap {
     }
 
     fn get_distance(point1: &Point, point2: &Point) -> f64 {
-        (f64::powf(point1.x-point2.x,2.0) + f64::powf(point1.y-point2.y,2.0)).sqrt()
+        //(f64::powf(point1.x-point2.x,2.0) + f64::powf(point1.y-point2.y,2.0)).sqrt()
+        (f64::powf(point1.x-point2.x,2.0) + f64::powf(point1.y-point2.y,2.0))
     }    
 }
 
@@ -81,92 +88,38 @@ fn get_solution_length(map: &DistanceMap, solution: &Vec<u32>) -> (f64, bool){
     (length, is_complete)
 }
 
-fn greedy_recurse(map: &DistanceMap, depth: u8, solution: &mut Vec<u32>, in_solution: &mut HashSet<u32>) -> f64{
-    let mut current_node: &u32 = &0;
-
-    // Get current node, or set it to zero if it's the first node in the solution.
-    if solution.len() > 0 {
-        current_node = &(solution.last().unwrap());
-    } else {
-        // Arbitrarily start at node zero.
-        solution.push(0);
-        in_solution.insert(0 as u32);
-        //in_solution[0] = true;
-    }
-
-    let mut distances: Vec<(f64, u32)> = (0..map.point_count() as u32)
-        .filter(|&index| !in_solution.contains(&index))
-        .map(|index| {
-            let distance = map.get_distance_from_points(current_node, &index);
-            (distance, index)
-        })
-        .collect();
-
-
-
-    // Sort by the distance using a custom comparison function
-    distances.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-
-    // Take the first 'depth' elements
-    let closest: Vec<u32> = distances.iter().take(depth as usize).map(|&(_, point)| point).collect();
-
-    let mut cheapest: f64 = f64::MAX;
-    let mut best_push: &u32 = &u32::MAX;
-
-    /* Add each of the closest nodes and run the recursive function on them again.
-    *  Keeping track of which one leads to the shortest route.*/
-    for i in closest.iter() {
-        solution.push(*i);
-        in_solution.insert(*i as u32);
-        //in_solution[*i as usize] = true;
-        let cost:f64 = greedy_recurse(map, depth-1, solution, in_solution);
-        
-        if cost < cheapest {
-            cheapest = cost;
-            best_push = i;
-        }
-
-        solution.pop();
-        in_solution.remove(&(*i as u32));
-        //in_solution[*i as usize] = false;
-    }
-
-    /* Push the value that was determined to lead to the 
-    *  shortest route (looking depth ahead) */
-    solution.push(*best_push);
-    in_solution.insert(*best_push as u32);
-    //in_solution[*best_push as usize] = true;
-
-    /* Return the cost of your route so far */
-    return get_solution_length(map, solution).0;
-}
-
 #[inline(never)]
-fn get_greedy(map: &DistanceMap, mut depth: u8) -> Vec<u32> {
-
-    /* Correct the depth if it's greater than the number of nodes or less than 1.
-    * Note: If depth is equal to the number of nodes, then this 
-    * is a brute force algorithm with O(n!) complexity.*/
-    if depth > map.point_count() as u8 { depth = map.point_count() as u8; }
-    else if depth == 0 as u8 { depth = 1; }
-
+fn get_greedy(map: &DistanceMap) -> Vec<u32> {
     let mut solution: Vec<u32> = vec![];
-
-    //let mut in_solution = vec![false; map.point_count()];
-
     let mut in_solution = HashSet::new();
 
-    loop {
-        /* Greedy recurse will add a node to the solution with
-        *  each iteration. Iterations will terminate when the
-        *  solution is complete. */
-        greedy_recurse(&map, depth, &mut solution, &mut in_solution);
+    let mut current_node: u32 = 0;
 
-        let is_complete = solution.len() == map.point_count();
+    while solution.len() < map.point_count() {
 
-        /* Keep looping until you have a solution. */
-        if is_complete { return solution; }
+        // Get current node, or set it to zero if it's the first node in the solution.
+        if solution.len() > 0 {
+            current_node = *solution.last().unwrap();
+        } else {
+            // Arbitrarily start at node zero.
+            solution.push(0);
+            in_solution.insert(0);
+        }
+
+        let mut distances: Vec<(f64, u32)> = (0..map.point_count() as u32)
+            .filter(|&index| !in_solution.contains(&index))
+            .map(|index| (map.get_distance_from_points(&current_node, &index), index))
+            .collect();
+
+        // Sort by the distance using a custom comparison function
+        distances.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+        let closest = distances[0].1;
+
+        solution.push(closest);
+        in_solution.insert(closest);
     }
+    solution
 }
 
 fn get_file_name() -> String {
@@ -205,24 +158,23 @@ fn main() {
     // Get points from the json file.
     let points: Points = parse_file();
 
+    let start = Instant::now();
+
     let map = DistanceMap::new(&points);
 
-    let depth = 1;
+    let duration = start.elapsed();
 
-    let _greedy_solution: Vec<u32> = get_greedy(&map, depth);
+    println!("Now doing no square root.");
 
-    let _x = 1;
+    println!("Distances are mapped: {:?}", duration);
 
-    // if false{ 
-    //     for i in 1..5 {
-    //         let i: u8 = i as u8;
-    //         let _greedy_solution: Vec<u32> = get_greedy(&map, i);
-    //         let cost = get_solution_length(&map, &_greedy_solution);
-    //         println!("Depth of {} gave us a cost of {:.2} for {} points.", i, cost.0, points.points.len());
-    //     }
-    // }
+    let _greedy_solution: Vec<u32> = get_greedy(&map);
 
-    //let _greedy_solution: Vec<u32> = get_greedy(&map, depth);
+    println!("Solution is found: {:?}", start.elapsed() - duration);
+
+
+    println!("Total time: {:?}", start.elapsed());
+    println!("And we mapped {} points.", map.len());
 
     // TODO Potentially find 2-OPT from greedy
 
