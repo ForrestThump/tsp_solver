@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use rayon::prelude::*;
 
 use std::fs::File;
 use std::env;
@@ -6,7 +7,11 @@ use std::io::Read;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::time::Instant;
+use std::sync::Mutex;
 
+/* Using scaled long types instead of floats to prevent the use of floating point
+*  operations makes no meaningful difference in computation time according to 
+*  empirical analysis. */
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct Point {
     x: f64,
@@ -19,30 +24,43 @@ struct Points {
     points: Vec<Point>,
 }
 
-#[derive(Clone)]
 struct DistanceMap {
-    map: HashMap<(u32, u32), f64>,
+    map: Mutex<HashMap<(u32, u32), f64>>,
     num_points: u32,
 }
 
 impl DistanceMap {
     fn new(points: &Points) -> DistanceMap {
         let num_points = points.points.len() as u32;
+
         // Calculate the number of combinations of points
         let capacity = (num_points * (num_points - 1) / 2) as usize;
 
         // Initialize the HashMap with the calculated capacity
-        let mut map = HashMap::with_capacity(capacity);
+        /* Empirical analysis indicates that doubling the capacity corresponds with
+        *  a decrease in performance in multiple areas. */
+        let map = Mutex::new(HashMap::with_capacity(capacity));
 
-        for (i, point1) in points.points.iter().enumerate() {
+        points.points.par_iter().enumerate().for_each(|(i, point1)| {
             for (j, point2) in points.points.iter().enumerate().skip(i + 1) {
-                let i_u32 = i as u32;
-                let j_u32 = j as u32;
-                map.insert((i_u32, j_u32), DistanceMap::get_distance(point1, point2));
-            }
-        }
+                let distance = DistanceMap::get_distance(point1, point2);
 
-        DistanceMap { map, num_points }
+                // Lock the mutex to insert into the map
+                map.lock().unwrap().insert((i as u32, j as u32), distance);
+            }
+        });
+
+        DistanceMap { map: map.into_inner().unwrap().into(), num_points }
+
+        // for (i, point1) in points.points.iter().enumerate() {
+        //     for (j, point2) in points.points.iter().enumerate().skip(i + 1) {
+        //         let i_u32 = i as u32;
+        //         let j_u32 = j as u32;
+        //         map.insert((i_u32, j_u32), DistanceMap::get_distance(point1, point2));
+        //     }
+        // }
+
+        //DistanceMap { map, num_points }
     }
     
     fn point_count(&self) -> usize {
@@ -62,7 +80,7 @@ impl DistanceMap {
             (point2, point1)
         };
     
-        *self.map.get(&(*smaller, *larger)).unwrap_or(&0.0)
+        *self.map.lock().unwrap().get(&(*smaller, *larger)).unwrap_or(&0.0)
     }
 
     fn get_distance(point1: &Point, point2: &Point) -> f64 {
