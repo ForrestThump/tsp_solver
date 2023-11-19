@@ -7,6 +7,9 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::time::Instant;
 
+use rayon::prelude::*;
+use dashmap::DashMap;
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct Point {
     x: f64,
@@ -21,26 +24,21 @@ struct Points {
 
 #[derive(Clone)]
 struct DistanceMap {
-    map: HashMap<(u32, u32), f64>,
+    map: DashMap<(u32, u32), f64>,
     num_points: u32,
 }
 
 impl DistanceMap {
     fn new(points: &Points) -> DistanceMap {
         let num_points = points.points.len() as u32;
-        // Calculate the number of combinations of points
-        let capacity = (num_points * (num_points - 1) / 2) as usize;
+        let map = DashMap::with_capacity(num_points as usize * (num_points as usize - 1) / 2);
 
-        // Initialize the HashMap with the calculated capacity
-        let mut map = HashMap::with_capacity(capacity);
-
-        for (i, point1) in points.points.iter().enumerate() {
+        points.points.par_iter().enumerate().for_each(|(i, point1)| {
             for (j, point2) in points.points.iter().enumerate().skip(i + 1) {
-                let i_u32 = i as u32;
-                let j_u32 = j as u32;
-                map.insert((i_u32, j_u32), DistanceMap::get_distance(point1, point2));
+                let distance = DistanceMap::get_distance(point1, point2);
+                map.insert((i as u32, j as u32), distance);
             }
-        }
+        });
 
         DistanceMap { map, num_points }
     }
@@ -62,7 +60,7 @@ impl DistanceMap {
             (point2, point1)
         };
     
-        *self.map.get(&(*smaller, *larger)).unwrap_or(&0.0)
+        self.map.get(&(*smaller, *larger)).map_or(0.0, |v| *v)
     }
 
     fn get_distance(point1: &Point, point2: &Point) -> f64 {
@@ -74,6 +72,12 @@ impl DistanceMap {
         *******************************/
         f64::powf(point1.x-point2.x,2.0) + f64::powf(point1.y-point2.y,2.0).sqrt()
     }    
+}
+
+#[derive(Clone)]
+struct Solution {
+    route: Vec<u32>,
+    distance: f64,
 }
 
 fn get_solution_length(map: &DistanceMap, solution: &Vec<u32>) -> (f64, bool){
@@ -97,7 +101,7 @@ fn get_solution_length(map: &DistanceMap, solution: &Vec<u32>) -> (f64, bool){
 }
 
 #[inline(never)]
-fn get_greedy(map: &DistanceMap) -> Vec<u32> {
+fn get_greedy(map: &DistanceMap) -> Solution {
     let mut solution: Vec<u32> = vec![];
     let mut in_solution = HashSet::new();
 
@@ -114,19 +118,72 @@ fn get_greedy(map: &DistanceMap) -> Vec<u32> {
             in_solution.insert(0);
         }
 
+        // Parallel distance calculation
         let mut distances: Vec<(f64, u32)> = (0..map.point_count() as u32)
+            .into_par_iter() // Using Rayon's parallel iterator
             .filter(|&index| !in_solution.contains(&index))
             .map(|index| (map.get_distance_from_points(&current_node, &index), index))
             .collect();
 
-        // Sort by the distance using a custom comparison function
-        distances.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        distances.par_sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)); 
 
         let closest = distances[0].1;
 
         solution.push(closest);
         in_solution.insert(closest);
     }
+
+    let distance: f64 = get_solution_length(map, &solution).0;
+
+    Solution { route: solution, distance: distance }
+}
+
+fn two_opt_swap(route: &Vec<u32>, v1: usize, v2: usize) -> Vec<u32> {
+    let mut new_route = Vec::with_capacity(route.len());
+
+    // 1. Add route[0] to route[v1] in order
+    new_route.extend_from_slice(&route[0..=v1]);
+
+    // 2. Add route[v1+1] to route[v2] in reverse order
+    for i in (v1+1..=v2).rev() {
+        new_route.push(route[i]);
+    }
+
+    // 3. Add route[v2+1] to route[end] in order
+    if v2 < route.len() - 1 {
+        new_route.extend_from_slice(&route[v2+1..]);
+    }
+
+    new_route
+}
+
+fn get_delta(map: &DistanceMap, solution: &Solution, i: &usize, j: &usize) -> f64{
+    - map.get_distance_from_points(&solution.route[*i], 
+        &solution.route[*i + 1]) - map.get_distance_from_points(&solution.route[*j], 
+            &solution.route[*j + 1]) + map.get_distance_from_points(&solution.route[*i + 1], 
+                &solution.route[*j + 1]) +
+                map.get_distance_from_points(&solution.route[*i], &solution.route[*j])
+}
+
+fn get_two_opt(map: &DistanceMap, mut solution: Solution) -> Solution {
+
+    loop {
+        let mut improved = false;
+        'outer_for: for i in 0..solution.route.len() {
+            for j in i + 1..solution.route.len() {
+                let length_delta: f64 = get_delta(map, &solution, &i, &j);
+
+                if length_delta < 0 as f64 {
+                    solution.route = two_opt_swap(&solution.route, i, j);
+                    solution.distance -= length_delta;
+                    improved = true;
+                    break 'outer_for;
+                }
+            }
+        }
+        if !improved { break; }
+    }
+
     solution
 }
 
@@ -170,19 +227,28 @@ fn main() {
 
     let map = DistanceMap::new(&points);
 
-    let duration = start.elapsed();
+    let mut duration = start.elapsed();
 
-    println!("Distances are mapped: {:?}", duration);
+    println!("Distances are mapped: +{:?}", duration);
 
-    let _greedy_solution: Vec<u32> = get_greedy(&map);
+    let greedy_solution: Solution = get_greedy(&map);
 
-    println!("Solution is found: {:?}", start.elapsed() - duration);
+    duration = start.elapsed() - duration;
 
+    println!("Greedy solution is found: +{:?}", duration);
+
+    let _two_opt_solution: Solution = get_two_opt(&map, greedy_solution.clone());
+
+    duration = start.elapsed() - duration;
+
+    println!("Two-opt is found: +{:?}", duration);
 
     println!("Total time: {:?}", start.elapsed());
-    println!("And we mapped {} points.", map.len());
+    println!("Mapped {} points.", map.len());
 
-    // TODO Potentially find 2-OPT from greedy
+
+
+    // TODO Find 2-OPT from greedy
 
     // TODO Branch and bound
 
