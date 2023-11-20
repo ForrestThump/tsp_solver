@@ -10,6 +10,9 @@ use std::time::Instant;
 use rand::seq::SliceRandom;  // Import the trait that provides the shuffle method
 use rand::thread_rng; 
 
+use std::sync::{Arc, Mutex,};
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use rayon::prelude::*;
 use dashmap::DashMap;
 
@@ -77,7 +80,7 @@ impl DistanceMap {
     }    
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct Solution {
     route: Vec<u32>,
     distance: f64,
@@ -178,29 +181,46 @@ fn get_delta(map: &DistanceMap, solution: &Solution, i: &usize, j: &usize) -> f6
     round(added)
 }
 
-fn get_two_opt(map: &DistanceMap, mut solution: Solution) -> Solution {
+fn get_two_opt(map: &DistanceMap, solution_input: Solution) -> Solution {
+    let solution = Arc::new(Mutex::new(solution_input));
+    let improved = Arc::new(AtomicBool::new(false));
 
     loop {
-        let mut improved = false;
-        'outer_for: for i in 0..solution.route.len() {
-            for j in i + 1..solution.route.len() {
-                let length_delta: f64 = get_delta(map, &solution, &i, &j);
+        let local_improved = improved.clone();
+        let local_solution = solution.clone();
 
-                // If delta is negative, that means we can improve by swapping
-                if length_delta < 0 as f64 {
-                    solution.route = two_opt_swap(&solution.route, i, j);
+        // Extract route length outside of the parallel loop
+        let route_len = {
+            let sol = local_solution.lock().unwrap();
+            sol.route.len()
+        };
 
-                    // Remember that the delta is in fact negative, so we add it.
-                    solution.distance += length_delta;
-                    improved = true;
-                    break 'outer_for;
+        // Parallel iteration
+        (0..route_len).into_par_iter().for_each(|i| {
+            for j in i + 1..route_len {
+                let length_delta: f64 = {
+                    let sol = local_solution.lock().unwrap();
+                    get_delta(map, &sol, &i, &j)
+                };
+
+                if length_delta < 0.0 {
+                    let mut sol = local_solution.lock().unwrap();
+                    sol.route = two_opt_swap(&sol.route, i, j);
+                    sol.distance += length_delta;
+                    local_improved.store(true, Ordering::Relaxed);
+                    return; // Exit current iteration
                 }
             }
+        });
+
+        if !improved.load(Ordering::Relaxed) {
+            break;
+        } else {
+            improved.store(false, Ordering::Relaxed); // Reset for next iteration
         }
-        if !improved { break; }
     }
 
-    solution
+    Arc::try_unwrap(solution).unwrap().into_inner().unwrap()
 }
 
 fn get_file_name() -> String {
