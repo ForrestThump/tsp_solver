@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::env;
 use std::io::Read;
-use std::collections::HashMap;
 use std::collections::HashSet;
 use std::time::Instant;
 use rand::seq::SliceRandom;  // Import the trait that provides the shuffle method
@@ -86,6 +85,12 @@ struct Solution {
     distance: f64,
 }
 
+impl Solution {
+    fn len(&self) -> usize {
+        self.route.len()
+    }
+}
+
 fn round(number: f64) -> f64 {
     (number * 1000000.0).round() / 1000000.0
 }
@@ -110,7 +115,6 @@ fn get_solution_length(map: &DistanceMap, solution: &Vec<u32>) -> (f64, bool){
     (length, is_complete)
 }
 
-#[inline(never)]
 fn get_greedy(map: &DistanceMap) -> Solution {
     let mut solution: Vec<u32> = vec![];
     let mut in_solution = HashSet::new();
@@ -223,6 +227,84 @@ fn get_two_opt(map: &DistanceMap, solution_input: Solution) -> Solution {
     Arc::try_unwrap(solution).unwrap().into_inner().unwrap()
 }
 
+fn branch_and_bound_recurse(solution: &mut Solution, 
+    map: &DistanceMap, 
+    bssf: &Arc<Mutex<f64>>, 
+    unvisited: & mut HashSet<u32>, 
+    best_solution: &Arc<Mutex<Solution>>,) {
+
+    /* If it is a complete solution */
+    if &solution.len() == &map.len() {
+        let mut bssf_guard = bssf.lock().unwrap();
+        if solution.distance < *bssf_guard {
+            let additional_distance = map.get_distance_from_points(&solution.route.last().unwrap(), 
+                                                            &solution.route.first().unwrap());
+
+            if solution.distance + additional_distance < *bssf_guard {
+                *bssf_guard = solution.distance + additional_distance;
+                let mut best_solution_guard = best_solution.lock().unwrap();
+                *best_solution_guard = solution.clone();
+                best_solution_guard.distance = *bssf_guard;
+                drop(bssf_guard);
+                drop(best_solution_guard);
+            }
+        }
+    } else {
+
+        // Grab bssf and drop lock quickly to avoid clashing
+        let bssf_guard = bssf.lock().unwrap();
+        let stale_bssf = bssf_guard.clone();
+        drop(bssf_guard);
+
+        // Collect unvisited nodes to process. This is inefficient. Consider alternative.
+        let temp_nodes: Vec<u32> = unvisited.iter().cloned().collect();
+
+        for i in temp_nodes {
+            let additional_distance = map.get_distance_from_points(&i, solution.route.last().unwrap());
+
+            if solution.distance + additional_distance < stale_bssf {
+                solution.distance += additional_distance;
+                solution.route.push(i);
+                unvisited.remove(&i); // Safe to remove here
+                branch_and_bound_recurse(solution, map, bssf, unvisited, best_solution);
+                unvisited.insert(i.clone());
+                solution.distance -= additional_distance;
+            }
+        }
+        
+    }
+
+}
+
+fn branch_and_bound_from_node(start_node: u32, map: &DistanceMap, bssf: Arc<Mutex<f64>>) -> Solution {
+    let mut solution = Solution { route: vec![start_node], distance: 0.0  };
+    let mut unvisited: HashSet<u32> = (0..map.len() as u32).filter(|&n| n != start_node).collect();
+
+    let temp_solution = Solution { route: vec![], distance: 0.0, };
+    let best_solution = Arc::new(Mutex::new(Solution::from(temp_solution)));
+
+    branch_and_bound_recurse(&mut solution, map, &bssf, &mut unvisited, &best_solution);
+
+    let return_solution = best_solution.lock().unwrap().clone();
+    
+    return_solution
+}
+
+fn parallel_branch_and_bound(start_nodes: Vec<u32>, map: &DistanceMap, bssf_input: f64) -> Solution {
+    let bssf = Arc::new(Mutex::new(f64::from(bssf_input)));
+    
+    start_nodes.into_par_iter().map(|start_node| {
+        branch_and_bound_from_node(start_node, map, bssf.clone())
+    }).reduce_with(|a, b| {
+        if a.distance < b.distance { a } else { b }
+    }).unwrap()
+}
+
+fn get_optimal(map: &DistanceMap, bssf: &mut f64) -> Solution {
+    let nodes: Vec<u32> = (0..map.len() as u32).collect();
+    parallel_branch_and_bound(nodes, map, bssf.clone())
+}
+
 fn get_file_name() -> String {
     let args: Vec<_> = env::args().collect();
 
@@ -262,7 +344,7 @@ fn get_random_solution (map: &DistanceMap) -> Solution {
     Solution { route: vec.clone(), distance: get_solution_length(&map, &vec).0 }
 }
 
-fn print_solution(map: &DistanceMap, solution: &Solution) {
+fn print_solution(_map: &DistanceMap, solution: &Solution) {
     print!("Solution is: ");
 
     for i in solution.route.iter() {
@@ -293,8 +375,6 @@ fn main() {
 
     println!("Greedy solution is found: +{:?}", duration);
 
-    print_solution(&map, &greedy_solution);
-
     //let random_solution: Solution = get_random_solution(&map);
 
     let two_opt_solution: Solution = get_two_opt(&map, greedy_solution.clone());
@@ -302,16 +382,17 @@ fn main() {
     duration = start.elapsed() - duration;
 
     println!("Two-opt is found: +{:?}", duration);
-    print_solution(&map, &two_opt_solution);
+
+    let mut bssf: f64 = two_opt_solution.distance;
+
+    let _optimal_solution: Solution = get_optimal(&map, &mut bssf);
+
+    duration = start.elapsed() - duration;
+
+    println!("Optimal is found +{:?}", duration);
 
     println!("Total time: {:?}", start.elapsed());
     println!("Mapped {} points.", map.len());
-
-
-
-    // TODO Find 2-OPT from greedy
-
-    // TODO Branch and bound
 
     // Return optimal solution as a JSON file.
 }
