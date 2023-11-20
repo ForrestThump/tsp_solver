@@ -1,3 +1,4 @@
+use rayon::iter::IndexedParallelIterator;
 use serde::{Deserialize, Serialize};
 
 use std::fs::File;
@@ -6,6 +7,8 @@ use std::io::Read;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::time::Instant;
+use rand::seq::SliceRandom;  // Import the trait that provides the shuffle method
+use rand::thread_rng; 
 
 use rayon::prelude::*;
 use dashmap::DashMap;
@@ -70,7 +73,7 @@ impl DistanceMap {
         * the square root is not that expensive, and the increased variable size of not taking the square root is 
         * comparatively more expensive.
         *******************************/
-        f64::powf(point1.x-point2.x,2.0) + f64::powf(point1.y-point2.y,2.0).sqrt()
+        (f64::powf(point1.x-point2.x,2.0) + f64::powf(point1.y-point2.y,2.0)).sqrt()
     }    
 }
 
@@ -78,6 +81,10 @@ impl DistanceMap {
 struct Solution {
     route: Vec<u32>,
     distance: f64,
+}
+
+fn round(number: f64) -> f64 {
+    (number * 1000000.0).round() / 1000000.0
 }
 
 fn get_solution_length(map: &DistanceMap, solution: &Vec<u32>) -> (f64, bool){
@@ -154,15 +161,21 @@ fn two_opt_swap(route: &Vec<u32>, v1: usize, v2: usize) -> Vec<u32> {
         new_route.extend_from_slice(&route[v2+1..]);
     }
 
-    new_route
+    return new_route;
 }
 
-fn get_delta(map: &DistanceMap, solution: &Solution, i: &usize, j: &usize) -> f64{
-    - map.get_distance_from_points(&solution.route[*i], 
-        &solution.route[*i + 1]) - map.get_distance_from_points(&solution.route[*j], 
-            &solution.route[*j + 1]) + map.get_distance_from_points(&solution.route[*i + 1], 
-                &solution.route[*j + 1]) +
-                map.get_distance_from_points(&solution.route[*i], &solution.route[*j])
+fn get_delta(map: &DistanceMap, solution: &Solution, i: &usize, j: &usize) -> f64 {
+    let next_i = (i + 1) % solution.route.len();
+    let next_j = (j + 1) % solution.route.len();
+
+    let old_i_edge = map.get_distance_from_points(&solution.route[*i], &solution.route[next_i]);
+    let old_j_edge = map.get_distance_from_points(&solution.route[*j], &solution.route[next_j]);
+    let new_i_edge = map.get_distance_from_points(&solution.route[next_i], &solution.route[next_j]);
+    let new_j_edge = map.get_distance_from_points(&solution.route[*i], &solution.route[*j]);
+
+    let added = new_i_edge + new_j_edge - old_i_edge - old_j_edge;
+
+    round(added)
 }
 
 fn get_two_opt(map: &DistanceMap, mut solution: Solution) -> Solution {
@@ -173,9 +186,12 @@ fn get_two_opt(map: &DistanceMap, mut solution: Solution) -> Solution {
             for j in i + 1..solution.route.len() {
                 let length_delta: f64 = get_delta(map, &solution, &i, &j);
 
+                // If delta is negative, that means we can improve by swapping
                 if length_delta < 0 as f64 {
                     solution.route = two_opt_swap(&solution.route, i, j);
-                    solution.distance -= length_delta;
+
+                    // Remember that the delta is in fact negative, so we add it.
+                    solution.distance += length_delta;
                     improved = true;
                     break 'outer_for;
                 }
@@ -219,6 +235,26 @@ fn parse_file() -> Points {
     points
 }
 
+fn get_random_solution (map: &DistanceMap) -> Solution {
+    let mut vec: Vec<u32> = (0..map.len() as u32).collect();
+    vec.shuffle(&mut thread_rng());
+
+    Solution { route: vec.clone(), distance: get_solution_length(&map, &vec).0 }
+}
+
+fn print_solution(map: &DistanceMap, solution: &Solution) {
+    print!("Solution is: ");
+
+    for i in solution.route.iter() {
+        print!("{}, ", i);
+    }
+
+    println!("");
+    println!("Distance: {}", solution.distance);
+
+    println!("");
+}
+
 fn main() {
     // Get points from the json file.
     let points: Points = parse_file();
@@ -229,7 +265,7 @@ fn main() {
 
     let mut duration = start.elapsed();
 
-    println!("Distances are mapped: +{:?}", duration);
+    println!("Distances are mapped: +{:?}\n", duration);
 
     let greedy_solution: Solution = get_greedy(&map);
 
@@ -237,11 +273,16 @@ fn main() {
 
     println!("Greedy solution is found: +{:?}", duration);
 
-    let _two_opt_solution: Solution = get_two_opt(&map, greedy_solution.clone());
+    print_solution(&map, &greedy_solution);
+
+    //let random_solution: Solution = get_random_solution(&map);
+
+    let two_opt_solution: Solution = get_two_opt(&map, greedy_solution.clone());
 
     duration = start.elapsed() - duration;
 
     println!("Two-opt is found: +{:?}", duration);
+    print_solution(&map, &two_opt_solution);
 
     println!("Total time: {:?}", start.elapsed());
     println!("Mapped {} points.", map.len());
