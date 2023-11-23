@@ -1,104 +1,39 @@
-use rayon::iter::IndexedParallelIterator;
 use serde::{Deserialize, Serialize};
 
 use std::fs::File;
 use std::env;
 use std::io::Read;
-use std::collections::HashSet;
+use std::collections::{HashSet, BinaryHeap};
 use std::time::Instant;
-use rand::seq::SliceRandom;  // Import the trait that provides the shuffle method
+use std::time::Duration;
+use rand::seq::SliceRandom;
 use rand::thread_rng; 
 
 use std::sync::{Arc, Mutex,};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
 use rayon::prelude::*;
-use dashmap::DashMap;
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-struct Point {
-    x: f64,
-    y: f64,
-    id: u32,
-}
+mod point;
+use crate::point::Points;
 
-#[derive(Serialize, Deserialize, Debug)]
-struct Points {
-    points: Vec<Point>,
-}
+mod solution;
+use crate::solution::Solution;
 
-#[derive(Clone)]
-struct DistanceMap {
-    map: DashMap<(u32, u32), f64>,
-    num_points: u32,
-}
+mod distance_map;
+use crate::distance_map::DistanceMap;
 
-impl DistanceMap {
-    fn new(points: &Points) -> DistanceMap {
-        let num_points = points.points.len() as u32;
-        let map = DashMap::with_capacity(num_points as usize * (num_points as usize - 1) / 2);
+mod priority_queue_structs;
+use crate::priority_queue_structs::Edge;
+use crate::priority_queue_structs::DisjointSet;
+use crate::priority_queue_structs::Branch;
 
-        points.points.par_iter().enumerate().for_each(|(i, point1)| {
-            for (j, point2) in points.points.iter().enumerate().skip(i + 1) {
-                let distance = DistanceMap::get_distance(point1, point2);
-                map.insert((i as u32, j as u32), distance);
-            }
-        });
-
-        DistanceMap { map, num_points }
-    }
-    
-    fn point_count(&self) -> usize {
-        self.num_points as usize
-    }
-
-    fn len(&self) -> usize {
-        self.point_count()
-    }
-
-    fn get_distance_from_points(&self, point1: &u32, point2: &u32) ->f64 {
-        if *point1 == *point2 { return 0.0; }
-
-        let (smaller, larger) = if point1 < point2 {
-            (point1, point2)
-        } else {
-            (point2, point1)
-        };
-    
-        self.map.get(&(*smaller, *larger)).map_or(0.0, |v| *v)
-    }
-
-    fn get_distance(point1: &Point, point2: &Point) -> f64 {
-
-        /* Emperical testing with a random, even distribution of points shows that NOT taking the square root
-        * yields a 1% slower distance and greedy computation time compared to taking the square root. Evidently, 
-        * the square root is not that expensive, and the increased variable size of not taking the square root is 
-        * comparatively more expensive.
-        *******************************/
-        (f64::powf(point1.x-point2.x,2.0) + f64::powf(point1.y-point2.y,2.0)).sqrt()
-    }    
-}
-
-#[derive(Clone, Debug)]
-struct Solution {
-    route: Vec<u32>,
-    distance: f64,
-}
-
-impl Solution {
-    fn len(&self) -> usize {
-        self.route.len()
-    }
-
-    fn new() -> Solution {
-        Solution { route: Vec::new(), distance: 0.0 }
-    }
-}
-
+/* Round the number to avoid fp rounding errors. */
 fn round(number: f64) -> f64 {
     (number * 1000000.0).round() / 1000000.0
 }
 
+/* Returns the total length of a given solution. */
 fn get_solution_length(map: &DistanceMap, solution: &Vec<u32>) -> (f64, bool){
     let mut length: f64 = 0.0;
 
@@ -119,6 +54,7 @@ fn get_solution_length(map: &DistanceMap, solution: &Vec<u32>) -> (f64, bool){
     (length, is_complete)
 }
 
+/* Finds the greedy solution to TSP. */
 fn get_greedy(map: &DistanceMap) -> Solution {
     let mut solution: Vec<u32> = vec![];
     let mut in_solution = HashSet::new();
@@ -156,6 +92,7 @@ fn get_greedy(map: &DistanceMap) -> Solution {
     Solution { route: solution, distance: distance }
 }
 
+/* Swap edges leaving v1 and v2 in the route. */
 fn two_opt_swap(route: &Vec<u32>, v1: usize, v2: usize) -> Vec<u32> {
     let mut new_route = Vec::with_capacity(route.len());
 
@@ -175,6 +112,7 @@ fn two_opt_swap(route: &Vec<u32>, v1: usize, v2: usize) -> Vec<u32> {
     return new_route;
 }
 
+/* Determines the incremental gain of swapping edges */
 fn get_delta(map: &DistanceMap, solution: &Solution, i: &usize, j: &usize) -> f64 {
     let next_i = (i + 1) % solution.route.len();
     let next_j = (j + 1) % solution.route.len();
@@ -189,6 +127,8 @@ fn get_delta(map: &DistanceMap, solution: &Solution, i: &usize, j: &usize) -> f6
     round(added)
 }
 
+/* Local search algorithm swaps edges to find local minima solution from
+*  existing passed in solution. */
 fn get_two_opt(map: &DistanceMap, solution_input: Solution) -> Solution {
     let solution = Arc::new(Mutex::new(solution_input));
     let improved = Arc::new(AtomicBool::new(false));
@@ -215,22 +155,25 @@ fn get_two_opt(map: &DistanceMap, solution_input: Solution) -> Solution {
                     let mut sol = local_solution.lock().unwrap();
                     sol.route = two_opt_swap(&sol.route, i, j);
                     sol.distance += length_delta;
-                    local_improved.store(true, Ordering::Relaxed);
+                    local_improved.store(true, AtomicOrdering::Relaxed);
                     return; // Exit current iteration
                 }
             }
         });
 
-        if !improved.load(Ordering::Relaxed) {
+        if !improved.load(AtomicOrdering::Relaxed) {
             break;
         } else {
-            improved.store(false, Ordering::Relaxed); // Reset for next iteration
+            improved.store(false, AtomicOrdering::Relaxed); // Reset for next iteration
         }
     }
 
     Arc::try_unwrap(solution).unwrap().into_inner().unwrap()
 }
 
+/* Consider implementing and analyzing 3-opt. */
+
+/* Recursive branch and bound search function */
 fn branch_and_bound_recurse(solution: &mut Solution, 
     map: &DistanceMap, 
     bssf: &Arc<Mutex<f64>>, 
@@ -260,6 +203,7 @@ fn branch_and_bound_recurse(solution: &mut Solution,
         let stale_bssf = *bssf_guard;
         drop(bssf_guard);
 
+        /* This could be a point for micro-optimization, but it's kind of a pain. */
         let temp_nodes: Vec<u32> = unvisited.iter().cloned().collect();
 
         for node in temp_nodes {
@@ -278,30 +222,147 @@ fn branch_and_bound_recurse(solution: &mut Solution,
     }
 }
 
-fn branch_and_bound_from_node(start_node: u32, map: &DistanceMap, bssf: Arc<Mutex<f64>>, best_solution_output: Arc<Mutex<Solution>>) {
-    let mut solution = Solution { route: vec![start_node], distance: 0.0  };
-    let mut unvisited: HashSet<u32> = (0..map.len() as u32).filter(|&n| n != start_node).collect();
-
-    branch_and_bound_recurse(&mut solution, map, &bssf, &mut unvisited, &best_solution_output);
-}
-
+/* Parallelize the branch and bound search */
 fn parallel_branch_and_bound(map: &DistanceMap, bssf_input: f64, best_solution: &Solution) -> Solution {
+    /* Init mutex objects */
     let bssf = Arc::new(Mutex::new(f64::from(bssf_input)));
-    let best_solution = Arc::new(Mutex::new(best_solution.clone()));
+    let best_solution_arc = Arc::new(Mutex::new(best_solution.clone()));
 
-    // Here, you can create different initial conditions for each thread if needed
-    // For now, we'll just start from node 0 for simplicity
+    // Assuming the start node is 0 and branching out to different nodes
     let start_node = 0;
-    let bssf_clone = Arc::clone(&bssf);
-    let best_solution_clone = Arc::clone(&best_solution);
-    branch_and_bound_from_node(start_node, map, bssf_clone, best_solution_clone);
+    let unvisited: Vec<u32> = (1..map.len() as u32).collect();  // Starting from 1 as 0 is the start node
 
-    let solution_clone = best_solution.lock().unwrap().clone();
+    /* Parallel loop */
+    unvisited.par_iter().for_each(|&node| {
+        let bssf_clone = Arc::clone(&bssf);
+        let best_solution_clone = Arc::clone(&best_solution_arc);
+        let mut solution = Solution { route: vec![start_node, node], distance: map.get_distance_from_points(&start_node, &node) };
+        let mut unvisited_thread: HashSet<u32> = unvisited.iter().cloned().filter(|&n| n != node).collect();
+
+        /* Recursive call will return the optimal solution in the best_solution_arc memory location */
+        branch_and_bound_recurse(&mut solution, map, &bssf_clone, &mut unvisited_thread, &best_solution_clone);
+    });
+
+    let solution_clone = best_solution_arc.lock().unwrap().clone();
     solution_clone
 }
 
+fn calculate_heuristic_estimate(map: &DistanceMap, branch: &Branch) -> f64 {
+    let unvisited: HashSet<u32> = (0..map.point_count() as u32)
+        .collect::<HashSet<_>>()
+        .difference(&branch.route.iter().cloned().collect())
+        .cloned()
+        .collect();
+
+    // Example: Using the sum of the shortest distances from each unvisited node
+    unvisited.iter()
+        .map(|&node| {
+            unvisited.iter()
+                .filter(|&&other_node| node != other_node)
+                .map(|&other_node| map.get_distance_from_points(&node, &other_node))
+                .min_by(|a, b| a.partial_cmp(b).unwrap())
+                .unwrap_or(0.0)
+        })
+        .sum()
+}
+
+fn get_heuristic_kruskals(map: &DistanceMap) -> f64 {
+    // Collect edges
+    let mut edges = Vec::new();
+    for key in map.map.iter() {
+        edges.push(Edge {
+            node1: key.key().0,
+            node2: key.key().1,
+            distance: *key.value(),
+        });
+    }
+
+    // Sort edges by distance
+    edges.par_sort_unstable_by(|a, b| a.distance.partial_cmp(&b.distance).unwrap());
+
+    // Create MST using disjoint set
+    let mut ds = DisjointSet::new(map.point_count());
+    let mut mst_weight = 0.0;
+    for edge in edges {
+        let x = ds.find(edge.node1);
+        let y = ds.find(edge.node2);
+
+        if x != y {
+            mst_weight += edge.distance;
+            ds.union(x, y);
+        }
+    }
+
+    mst_weight
+}
+
+fn parallel_priority_queue_bnb(map: &DistanceMap, bssf_input: &mut f64,) -> Solution {
+    let mut best_solution = Solution::new();
+    let bssf = Arc::new(Mutex::new(f64::from(*bssf_input)));
+
+    let mut queue = BinaryHeap::new();
+
+    let initial_estimate: f64 = get_heuristic_kruskals(&map);
+
+    queue.push( Branch {route: vec![0], total_distance: 0.0, heuristic_estimate: initial_estimate, } );
+
+    while let Some(branch) = queue.pop() {
+        if branch.route.len() == map.point_count() {
+            let mut bssf_guard = bssf.lock().unwrap();
+            let solution_distance = get_solution_length(map, &branch.route).0;
+            if solution_distance < *bssf_guard {
+                best_solution.route = branch.route.clone();
+                best_solution.distance = solution_distance;
+                *bssf_guard = solution_distance;
+            }
+        } else {
+            // Generate new branches in parallel
+            let new_branches: Vec<Branch> = (0..map.point_count() as u32)
+                .into_par_iter()
+                .filter(|&node| !branch.route.contains(&node))
+                .map(|node| {
+                    let mut new_route = branch.route.clone();
+                    new_route.push(node);
+                    let new_total_distance = get_solution_length(&map, &new_route).0;
+                    let new_heuristic_estimate = calculate_heuristic_estimate(&map, &branch);
+                    Branch {
+                        route: new_route,
+                        total_distance: new_total_distance,
+                        heuristic_estimate: new_heuristic_estimate,
+                    }
+                })
+                .filter(|new_branch| new_branch.total_distance + new_branch.heuristic_estimate < *bssf.lock().unwrap())
+                .collect();
+    
+            // Sequentially insert new branches into the queue
+            for new_branch in new_branches {
+                queue.push(new_branch);
+            }
+        }
+    }
+
+    best_solution
+}
+
+/* While this can return the optimal solution, the O(n!) worst-case time complexity makes
+   it a pretty bad idea to use if you are mapping more than ~16 points.
+
+   16 points runs for about 5 minutes. Not sure for 17 points.
+   
+   Additionally, the optimal solution actually typically returns the 2-opt local minima
+   solution. So the low chance of getting a better solution usually isn't worth the time.*/
 fn get_optimal(map: &DistanceMap, bssf: &mut f64, best_solution: &Solution) -> Solution {
-    parallel_branch_and_bound(map, *bssf, best_solution)
+    let using_queue = false;
+
+    if using_queue {
+        parallel_priority_queue_bnb(map, bssf)
+    } else {
+        /* This one runs faster. */
+        parallel_branch_and_bound(map, *bssf, best_solution)
+    }
+    
+    /* Possibly replace branch and bound with the dynamic TSP algorithm in the future? */
+    
 }
 
 fn get_file_name() -> String {
@@ -335,15 +396,15 @@ fn parse_file() -> Points {
 
     points
 }
-
-fn get_random_solution (map: &DistanceMap) -> Solution {
+/* Return a random TSP solution for testing purposes. */
+fn get_random_solution(map: &DistanceMap) -> Solution {
     let mut vec: Vec<u32> = (0..map.len() as u32).collect();
     vec.shuffle(&mut thread_rng());
 
     Solution { route: vec.clone(), distance: get_solution_length(&map, &vec).0 }
 }
-
-fn print_solution(map: &DistanceMap, solution: &Solution) {
+/* Print out the provided solution. */
+fn print_solution(solution: &Solution) {
     print!("Solution is: ");
 
     for i in solution.route.iter() {
@@ -351,8 +412,7 @@ fn print_solution(map: &DistanceMap, solution: &Solution) {
     }
 
     println!("");
-    println!("Distance: {}", get_solution_length(map, &solution.route).0);
-
+    println!("Distance: {}", solution.distance);
     println!("");
 }
 
@@ -364,43 +424,22 @@ fn main() {
 
     let map = DistanceMap::new(&points);
 
-    let mut duration = start.elapsed();
-
-    println!("Distances are mapped: +{:?}\n", duration);
-
     let greedy_solution: Solution = get_greedy(&map);
 
-    duration = start.elapsed() - duration;
+    let mut best_solution: Solution = get_two_opt(&map, greedy_solution.clone());
 
-    println!("Greedy solution is found: +{:?}", duration);
+    let mut bssf: f64 = best_solution.distance;
 
-    print_solution(&map, &greedy_solution);
-
-    let random_solution: Solution = get_random_solution(&map);
-
-    duration = start.elapsed() - duration;
-
-    println!("Random solution is found: +{:?}", duration);
-
-    print_solution(&map, &random_solution);
-
-    let two_opt_solution: Solution = get_two_opt(&map, greedy_solution.clone());
-
-    duration = start.elapsed() - duration;
-
-    println!("Two-opt is found: +{:?}", duration);
-
-    print_solution(&map, &two_opt_solution);
-
-    let mut bssf: f64 = two_opt_solution.distance;
-
-    let optimal_solution: Solution = get_optimal(&map, &mut bssf, &two_opt_solution);
-
-    duration = start.elapsed() - duration;
-
-    println!("Optimal is found +{:?}", duration);
-
-    print_solution(&map, &optimal_solution);
+    while start.elapsed() < Duration::new(60, 0) {
+        let random_solution: Solution = get_random_solution(&map);
+        let new_solution: Solution = get_two_opt(&map, random_solution);
+        if new_solution.distance < bssf {
+            bssf = new_solution.distance;
+            best_solution = new_solution
+        }
+    }
+    
+    print_solution(&best_solution);
 
     println!("Total time: {:?}", start.elapsed());
     println!("Mapped {} points.", map.len());

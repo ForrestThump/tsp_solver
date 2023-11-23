@@ -11,3 +11,4 @@ serde = { version = "1.0", features = ["derive"] }
 rayon = "1.5.1"  # Use the latest version available
 dashmap = "5.5.3"
 rand = "0.8.5"
+ordered-float = { version = "4.0", default-features = true }
