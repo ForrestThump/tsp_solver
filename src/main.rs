@@ -89,6 +89,10 @@ impl Solution {
     fn len(&self) -> usize {
         self.route.len()
     }
+
+    fn new() -> Solution {
+        Solution { route: Vec::new(), distance: 0.0 }
+    }
 }
 
 fn round(number: f64) -> f64 {
@@ -253,56 +257,57 @@ fn branch_and_bound_recurse(solution: &mut Solution,
 
         // Grab bssf and drop lock quickly to avoid clashing
         let bssf_guard = bssf.lock().unwrap();
-        let stale_bssf = bssf_guard.clone();
+        let stale_bssf = *bssf_guard;
         drop(bssf_guard);
 
-        // Collect unvisited nodes to process. This is inefficient. Consider alternative.
         let temp_nodes: Vec<u32> = unvisited.iter().cloned().collect();
 
-        for i in temp_nodes {
-            let additional_distance = map.get_distance_from_points(&i, solution.route.last().unwrap());
+        for node in temp_nodes {
+            let additional_distance = map.get_distance_from_points(&node, solution.route.last().unwrap());
 
             if solution.distance + additional_distance < stale_bssf {
                 solution.distance += additional_distance;
-                solution.route.push(i);
-                unvisited.remove(&i); // Safe to remove here
+                solution.route.push(node);
+                unvisited.remove(&node);
                 branch_and_bound_recurse(solution, map, bssf, unvisited, best_solution);
-                unvisited.insert(i.clone());
+                unvisited.insert(node);
+                solution.route.pop();
                 solution.distance -= additional_distance;
             }
         }
-        
     }
-
 }
 
-fn branch_and_bound_from_node(start_node: u32, map: &DistanceMap, bssf: Arc<Mutex<f64>>) -> Solution {
+fn branch_and_bound_from_node(start_node: u32, map: &DistanceMap, bssf: Arc<Mutex<f64>>, best_solution_output: Arc<Mutex<Solution>>) {
     let mut solution = Solution { route: vec![start_node], distance: 0.0  };
     let mut unvisited: HashSet<u32> = (0..map.len() as u32).filter(|&n| n != start_node).collect();
 
-    let temp_solution = Solution { route: vec![], distance: 0.0, };
-    let best_solution = Arc::new(Mutex::new(Solution::from(temp_solution)));
-
-    branch_and_bound_recurse(&mut solution, map, &bssf, &mut unvisited, &best_solution);
-
-    let return_solution = best_solution.lock().unwrap().clone();
-    
-    return_solution
+    branch_and_bound_recurse(&mut solution, map, &bssf, &mut unvisited, &best_solution_output);
 }
 
-fn parallel_branch_and_bound(start_nodes: Vec<u32>, map: &DistanceMap, bssf_input: f64) -> Solution {
+fn parallel_branch_and_bound(start_nodes: Vec<u32>, map: &DistanceMap, bssf_input: f64, best_solution: &Solution) -> Solution {
     let bssf = Arc::new(Mutex::new(f64::from(bssf_input)));
+    let best_solution = Arc::new(Mutex::new(best_solution.clone()));
+
+    for i in start_nodes.iter() {
+        let bssf_clone = Arc::clone(&bssf);
+        let best_solution_clone = Arc::clone(&best_solution);
+        branch_and_bound_from_node(*i, map, bssf_clone, best_solution_clone);
+    }
+
+    let solution_clone = best_solution.lock().unwrap().clone();
+    solution_clone
     
-    start_nodes.into_par_iter().map(|start_node| {
-        branch_and_bound_from_node(start_node, map, bssf.clone())
-    }).reduce_with(|a, b| {
-        if a.distance < b.distance { a } else { b }
-    }).unwrap()
+    // start_nodes.into_par_iter().map(|start_node| {
+    //     branch_and_bound_from_node(start_node, map, bssf.clone())
+    // }).reduce_with(|a, b| {
+    //     if a.distance < b.distance { a } else { b }
+    // }).unwrap()
 }
 
-fn get_optimal(map: &DistanceMap, bssf: &mut f64) -> Solution {
+fn get_optimal(map: &DistanceMap, bssf: &mut f64, best_solution: &Solution) -> Solution {
     let nodes: Vec<u32> = (0..map.len() as u32).collect();
-    parallel_branch_and_bound(nodes, map, bssf.clone())
+    parallel_branch_and_bound(nodes, map, *bssf, best_solution)
 }
 
 fn get_file_name() -> String {
@@ -344,7 +349,7 @@ fn get_random_solution (map: &DistanceMap) -> Solution {
     Solution { route: vec.clone(), distance: get_solution_length(&map, &vec).0 }
 }
 
-fn print_solution(_map: &DistanceMap, solution: &Solution) {
+fn print_solution(solution: &Solution) {
     print!("Solution is: ");
 
     for i in solution.route.iter() {
@@ -375,6 +380,8 @@ fn main() {
 
     println!("Greedy solution is found: +{:?}", duration);
 
+    print_solution(&greedy_solution);
+
     //let random_solution: Solution = get_random_solution(&map);
 
     let two_opt_solution: Solution = get_two_opt(&map, greedy_solution.clone());
@@ -383,13 +390,17 @@ fn main() {
 
     println!("Two-opt is found: +{:?}", duration);
 
+    print_solution(&two_opt_solution);
+
     let mut bssf: f64 = two_opt_solution.distance;
 
-    let _optimal_solution: Solution = get_optimal(&map, &mut bssf);
+    let _optimal_solution: Solution = get_optimal(&map, &mut bssf, &two_opt_solution);
 
     duration = start.elapsed() - duration;
 
     println!("Optimal is found +{:?}", duration);
+
+    print_solution(&_optimal_solution);
 
     println!("Total time: {:?}", start.elapsed());
     println!("Mapped {} points.", map.len());
