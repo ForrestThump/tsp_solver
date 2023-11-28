@@ -383,6 +383,7 @@ fn parse_file(filename: &String) -> Points {
 
     points
 }
+
 /* Return a random TSP solution for testing purposes. */
 fn get_random_solution(map: &DistanceMap) -> Solution {
     let mut vec: Vec<u32> = (0..map.len() as u32).collect();
@@ -390,6 +391,7 @@ fn get_random_solution(map: &DistanceMap) -> Solution {
 
     Solution { route: vec.clone(), distance: get_solution_length(&map, &vec).0 }
 }
+
 /* Print out the provided solution. */
 fn print_solution(solution: &Solution) {
     print!("Solution is: ");
@@ -484,19 +486,19 @@ fn get_map_from_file(filename: &String) -> DistanceMap {
 fn run_test() {
     let file_string: &String = &"points15.json".to_string();
 
-
     println!("Check1.");
 
     let solution = solve_tsp(file_string, &query::Usage::SolveLocal, 0 as u64);
 
 
     println!("Check2.");
+    
     let map = get_map_from_file(file_string);
 
 
     println!("Check3.");
-    assert_eq!(solution.distance, round(get_solution_length(&map, &solution.route).0));
 
+    assert_eq!(solution.distance, round(get_solution_length(&map, &solution.route).0));
 
     println!("Check4.");
 }
@@ -504,7 +506,7 @@ fn run_test() {
 
 fn main() {
 
-    if true {
+    if false {
         run_test();
         return;
     }
