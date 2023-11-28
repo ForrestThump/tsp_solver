@@ -1,8 +1,8 @@
-use serde::{Deserialize, Serialize};
 
 use std::fs::File;
 use std::env;
 use std::io::Read;
+use std::io;
 use std::collections::{HashSet, BinaryHeap};
 use std::time::Instant;
 use std::time::Duration;
@@ -27,6 +27,10 @@ mod priority_queue_structs;
 use crate::priority_queue_structs::Edge;
 use crate::priority_queue_structs::DisjointSet;
 use crate::priority_queue_structs::Branch;
+
+mod random_tsp;
+use crate::random_tsp::RandomTSPGenerator;
+
 
 /* Round the number to avoid fp rounding errors. */
 fn round(number: f64) -> f64 {
@@ -357,35 +361,16 @@ fn get_optimal(map: &DistanceMap, bssf: &mut f64, best_solution: &Solution) -> S
     if using_queue {
         parallel_priority_queue_bnb(map, bssf)
     } else {
-        /* This one runs faster. */
+
+        /* This one runs faster. 
+        *  Possibly try to improve this one with heuristic driling.*/
         parallel_branch_and_bound(map, *bssf, best_solution)
     }
     
     /* Possibly replace branch and bound with the dynamic TSP algorithm in the future? */
-    
 }
 
-fn get_file_name() -> String {
-    let args: Vec<_> = env::args().collect();
-
-    let mut filename: String = String::from("points.json");
-
-    if args.len() > 1 {
-        filename = args[1].clone();
-
-        if filename.ends_with(".txt") {
-            filename = filename.replace(".txt", ".json");
-        } else if !filename.ends_with(".json") {
-            filename.push_str(".json");
-        }
-    }
-
-    filename
-}
-
-fn parse_file() -> Points {
-    let filename = get_file_name();
-
+fn parse_file(filename: &String) -> Points {
     let path = filename.as_str();
     let mut file = File::open(path).expect("File not found");
 
@@ -416,13 +401,277 @@ fn print_solution(solution: &Solution) {
     println!("");
 }
 
-fn main() {
-    // Get points from the json file.
-    let points: Points = parse_file();
+fn generate_points(query: UserQuery) {
+    let generator = RandomTSPGenerator::new(1000 as f64, 1000 as f64);
 
+    let count: u32 = query.points;
+
+    let filename: String = format!("points{}.json", count);
+
+    generator.generate(&count, &filename);
+}
+
+#[derive(PartialEq, Debug)]
+enum Usage {
+    Generate,
+    SolveOptimal,
+    SolveLocal,
+}
+
+struct UserQuery {
+    usage:Usage,
+    points:u32,
+    filename:String,
+    time:u32,
+    max_points:u32,
+}
+
+impl UserQuery {
+    fn new() -> UserQuery {
+        UserQuery {usage: Usage::SolveLocal, points: 0, filename: String::from("points.json"), time: 60 as u32, max_points: 1000000000 }
+    }
+}
+
+fn determine_local_or_optimal() -> Usage {
+    let mut input: String = String::new();
+
+    loop {
+        input.clear();
+
+        println!("Would you like the local or optimal solution?");
+
+        if let Err(_) = io::stdin().read_line(&mut input) {
+            println!("Failed to read line.");
+            continue;
+        }
+
+        let words: Vec<&str> = input.trim().split_whitespace().collect();
+
+        if words.len() == 0 {
+            println!("Invalid input!");
+            continue;
+        }
+
+        match words[0].to_lowercase().as_str() {
+            "optimal" | "solve_optimal" => return Usage::SolveOptimal,
+            "local" | "solve_local" => return Usage::SolveLocal,
+            "solve" => if words[1].to_lowercase().as_str() == "optimal" { 
+                return Usage::SolveOptimal
+            } else if words[1].to_lowercase().as_str() == "local" { 
+                return Usage::SolveLocal 
+            }
+            _ => { }
+        }
+
+        println!("Invalid input! Please enter \"local\" or \"optimal\".");
+        continue;
+    }
+}
+
+fn query_usage() -> Usage {
+    let mut input = String::new();
+
+    loop {
+        input.clear();
+
+        println!("Please indicate your program usage. (\"generate_problem\", \"solve_optimal\", \"solve_local\")");
+        
+        if let Err(_) = io::stdin().read_line(&mut input) {
+            println!("Failed to read line.");
+            continue;
+        }
+
+        let words: Vec<&str> = input.trim().split_whitespace().collect();
+
+        if words.len() == 0 {
+            println!("Invalid input!");
+            continue;
+        }
+
+        match words[0].to_lowercase().as_str() {
+            "generate" | "generate_problem" => return Usage::Generate,
+            "solve_optimal" | "optimal" => return Usage::SolveOptimal,
+            "solve_local" | "local" => return Usage::SolveLocal,
+            "solve" => if words[1].to_lowercase().as_str() == "optimal" { 
+                return Usage::SolveOptimal
+            } else if words[1].to_lowercase().as_str() == "local" { 
+                return Usage::SolveLocal 
+            } else {
+                return determine_local_or_optimal();
+            }
+            _ => println!("Invalid input!"),
+        }
+    }
+}
+
+fn get_usage(args: &Vec<String>,) -> Usage {
+    if args.len() == 1 {
+        return query_usage();
+    } else {
+        match args[1].to_lowercase().as_str() {
+            "generate" | "generate_problem" => return Usage::Generate,
+            "solve_optimal" | "optimal" => return Usage::SolveOptimal,
+            "solve_local" | "local" => return Usage::SolveLocal,
+            _ => { 
+                println!("Invalid usage parameter."); 
+                return query_usage(); }
+        }
+    }
+}
+
+fn parse_generate(query: &mut UserQuery, args: &Vec<String>,) {
+    let mut query_ok: bool = true;
+
+    if args.len() > 2 as usize {
+        match args[2].trim().parse::<u32>() {
+            Ok(num) if num > 0 && num < query.max_points => {
+                query.points = num;
+            },
+            _ =>{
+                query_ok = false;
+            }
+        }
+    } else {
+        query_ok = false;
+    }
+
+    if !query_ok {
+        let mut input = String::new();
+        let mut attempts = 0;
+        loop {
+            input.clear();
+            println!("How many points do you need?");
+            
+            if let Err(_) = io::stdin().read_line(&mut input) {
+                println!("Failed to read line.");
+                continue;
+            }
+    
+            match input.trim().parse::<u32>() {
+                Ok(num) if num > 0 && num < query.max_points => {
+                    query.points = num;
+                    break;
+                },
+                _ =>{
+                    println!("Invalid input. Try again.");
+                    attempts += 1;
+                    if attempts >= 5 {
+                        println!("Max attempts reached. Exiting.");
+                        std::process::exit(1);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn check_file(file_name: &mut String, ok: &mut bool) {
+    if File::open(&file_name).is_ok() {
+        *ok = true;
+        return;
+    }
+
+    let mut file_path = file_name.to_string();
+    file_path.push_str(".json");            
+
+    if File::open(&file_path).is_ok(){
+        *file_name = String::from(file_path);
+        *ok = true;
+        return;
+    }
+}
+
+fn get_file_name(query: &mut UserQuery, args: &Vec<String>) {
+    let mut ok: bool = false;
+    
+    if args.len() > 2 {
+        let mut file_path = args[2].clone();
+        check_file(&mut file_path, &mut ok);
+        if ok {
+            query.filename = file_path;
+            return;
+        }
+    }
+
+    let mut input = String::new();
+    loop {
+        input.clear();
+
+        println!("Please input your points filename:");
+        if let Err(_) = io::stdin().read_line(&mut input) {
+            println!("Failed to read line.");
+            continue;
+        }
+
+        let mut file_path = input.trim().to_string();
+
+        check_file(&mut file_path, &mut ok);
+
+        if ok {
+            break;
+        } else {
+            println!("File not found.");
+        }
+    };
+}
+
+fn get_execution_time(query: &mut UserQuery, args: &Vec<String>) {
+    let mut seconds: u32 = 0 as u32;
+    
+    if args.len() > 3 {
+        match args[3].parse::<u32>() {
+            Ok(number) => {
+                seconds = number; // Assign the parsed value to points_count
+            },
+            Err(_) => {},
+        }
+    }
+
+    if seconds == 0 {
+        let mut input = String::new();
+
+        loop {
+            input.clear();
+            println!("How many seconds would you like the search to run for?");
+
+            if let Err(_) = io::stdin().read_line(&mut input) {
+                println!("Failed to read line.");
+                continue;
+            }
+
+            input = input.trim().to_string();
+            match input.parse::<u32>() {
+                Ok(number) => {
+                    query.time = number;
+                    break;
+                },
+                Err(_) => { println!("Error: Please input some number of seconds.")},
+            }
+        }
+    } else {
+        query.time = seconds;
+    }
+
+    
+}
+
+fn parse_solve(query: &mut UserQuery, args: &Vec<String>) {
+    get_file_name(query, args);
+
+    if query.usage == Usage::SolveLocal {
+        get_execution_time(query, args);
+    }
+}
+
+fn export_solution(solution: &Solution, filename: String) {
+    let json_string = serde_json::to_string_pretty(solution).expect("Error converting to JSON");
+    RandomTSPGenerator::write_to_file(json_string, filename);
+}
+
+fn solve_tsp(filename: &String, usage: &Usage, time: u64) -> Solution {
     let start = Instant::now();
 
-    let map = DistanceMap::new(&points);
+    let map = get_map_from_file(filename);
 
     let greedy_solution: Solution = get_greedy(&map);
 
@@ -430,19 +679,94 @@ fn main() {
 
     let mut bssf: f64 = best_solution.distance;
 
-    while start.elapsed() < Duration::new(60, 0) {
-        let random_solution: Solution = get_random_solution(&map);
-        let new_solution: Solution = get_two_opt(&map, random_solution);
-        if new_solution.distance < bssf {
-            bssf = new_solution.distance;
-            best_solution = new_solution
+    if *usage == Usage::SolveLocal {
+        let max_duration: Duration = Duration::new(time, 0);
+
+        while start.elapsed() < max_duration {
+            let random_solution: Solution = get_random_solution(&map);
+            let new_solution: Solution = get_two_opt(&map, random_solution);
+
+            if round(new_solution.distance) != round(get_solution_length(&map, &new_solution.route).0) {
+                println!("get_two_opt is returning solutions with incorrect distances.")
+            }
+            
+            if new_solution.distance < bssf {
+                bssf = new_solution.distance;
+                best_solution = new_solution.clone();
+            }
         }
+    } else {
+        assert_eq!(*usage, Usage::SolveOptimal);
+        best_solution = get_optimal(&map, &mut bssf, &best_solution.clone());
     }
-    
-    print_solution(&best_solution);
 
-    println!("Total time: {:?}", start.elapsed());
-    println!("Mapped {} points.", map.len());
+    best_solution
+}
 
-    // Return optimal solution as a JSON file.
+fn process_query(mut query: UserQuery) {
+    if query.usage == Usage::Generate {
+        generate_points(query);
+    } else {
+        let best_solution = solve_tsp(&query.filename, &query.usage, query.time.clone() as u64);
+        
+        let solution_type = if query.usage == Usage::SolveLocal { "_local" } else {"_optimal"};
+
+        if query.filename.ends_with(".json"){
+            query.filename = query.filename.replace(".json", solution_type);
+        } else {
+            query.filename.push_str(solution_type);
+        }
+
+        query.filename.push_str("_solution.json");
+
+        export_solution(&best_solution, query.filename.clone());
+    }
+}
+
+fn get_map_from_file(filename: &String) -> DistanceMap {
+    let points: Points = parse_file(filename);
+
+    DistanceMap::new(&points)
+}
+
+fn run_test() {
+    let file_string: &String = &"points15.json".to_string();
+
+
+    println!("Check1.");
+
+    let solution = solve_tsp(file_string, &Usage::SolveLocal, 0 as u64);
+
+
+    println!("Check2.");
+    let map = get_map_from_file(file_string);
+
+
+    println!("Check3.");
+    assert_eq!(solution.distance, get_solution_length(&map, &solution.route).0);
+
+
+    println!("Check4.");
+}
+
+fn main() {
+
+    if true {
+        run_test();
+        return;
+    }
+
+    let args: Vec<_> = env::args().collect();
+
+    let mut query = UserQuery::new();
+
+    query.usage = get_usage(&args);
+
+    if query.usage == Usage::Generate {
+        parse_generate(&mut query, &args);
+    } else {
+        parse_solve(&mut query, &args);
+    }
+
+    process_query(query);
 }

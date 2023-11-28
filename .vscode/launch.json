@@ -19,7 +19,7 @@
                     "kind": "bin"
                 }
             },
-            "args": [],
+            "args": ["solve_local", "points15.json", "6000"],
             "cwd": "${workspaceFolder}"
         },
         {

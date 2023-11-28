@@ -1,4 +1,6 @@
-#[derive(Clone, Debug)]
+use serde::Serialize;
+
+#[derive(Clone, Debug, Serialize)]
 pub struct Solution {
     pub route: Vec<u32>,
     pub distance: f64,
