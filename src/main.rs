@@ -99,25 +99,110 @@ fn get_greedy(map: &DistanceMap) -> Solution {
 }
 
 
-/* Swap edges leaving v1 and v2 in the route in place. */
-fn two_opt_swap(route: &mut Vec<u32>, v1: usize, v2: usize) {
-    assert!(v1 < v2, "v1 must be less than v2");
+// /* Swap edges leaving v1 and v2 in the route in place. */
+// fn two_opt_swap(route: &mut Vec<u32>, v1: usize, v2: usize) {
+//     assert!(v1 < v2, "v1 must be less than v2");
 
-    let mut temp_route = Vec::with_capacity(route.len());
+//     let mut temp_route = Vec::with_capacity(route.len());
 
-    // 1. Take the route from the start to v1
-    temp_route.extend_from_slice(&route[0..=v1]);
+//     // 1. Take the route from the start to v1
+//     temp_route.extend_from_slice(&route[0..=v1]);
 
-    // 2. Reverse the segment from v1+1 to v2 and add to the route
-    let mut reversed_segment = route[v1+1..=v2].to_vec();
-    reversed_segment.reverse();
-    temp_route.extend_from_slice(&reversed_segment);
+//     // 2. Reverse the segment from v1+1 to v2 and add to the route
+//     let mut reversed_segment = route[v1+1..=v2].to_vec();
+//     reversed_segment.reverse();
+//     temp_route.extend_from_slice(&reversed_segment);
 
-    // 3. Add the rest of the route from v2+1 to the end
-    temp_route.extend_from_slice(&route[v2+1..]);
+//     // 3. Add the rest of the route from v2+1 to the end
+//     temp_route.extend_from_slice(&route[v2+1..]);
 
-    // Copy the temp_route back to the original route
-    route.clone_from(&temp_route);
+//     // Copy the temp_route back to the original route
+//     route.clone_from(&temp_route);
+// }
+
+// /* Determines the incremental gain of swapping edges */
+// fn get_delta(map: &DistanceMap, solution: &Solution, i: &usize, j: &usize) -> f64 {
+//     let next_i = (i + 1) % solution.route.len();
+//     let next_j = (j + 1) % solution.route.len();
+
+//     let old_i_edge = map.get_distance_from_points(&solution.route[*i], &solution.route[next_i]);
+//     let old_j_edge = map.get_distance_from_points(&solution.route[*j], &solution.route[next_j]);
+//     let new_i_edge = map.get_distance_from_points(&solution.route[next_i], &solution.route[next_j]);
+//     let new_j_edge = map.get_distance_from_points(&solution.route[*i], &solution.route[*j]);
+
+//     let added = new_i_edge + new_j_edge - old_i_edge - old_j_edge;
+
+//     round(added)
+// }
+
+// /* Local search algorithm swaps edges to find local minima solution from
+// *  existing passed in solution. */
+// fn get_two_opt(map: &DistanceMap, solution_input: Solution) -> Solution {
+//     let solution = Arc::new(Mutex::new(solution_input));
+//     let improved = Arc::new(AtomicBool::new(false));
+
+//     loop {
+//         let local_improved = improved.clone();
+//         let local_solution = solution.clone();
+
+//         // Extract route length outside of the parallel loop
+//         let route_len = {
+//             let sol = local_solution.lock().unwrap();
+//             sol.route.len()
+//         };
+
+//         // Parallel iteration
+//         (0..route_len).into_par_iter().for_each(|i| {
+//             for j in i + 1..route_len {
+//                 let length_delta: f64 = {
+//                     let sol = local_solution.lock().unwrap();
+//                     get_delta(map, &sol, &i, &j)
+//                 };
+
+//                 if length_delta < 0.0 {
+//                     let mut sol = local_solution.lock().unwrap();
+//                     two_opt_swap(&mut sol.route, i, j);
+//                     sol.distance += length_delta;
+//                     local_improved.store(true, AtomicOrdering::Relaxed);
+//                     return; // Exit current iteration
+//                 }
+//             }
+//         });
+
+//         if !improved.load(AtomicOrdering::Relaxed) {
+//             break;
+//         } else {
+//             improved.store(false, AtomicOrdering::Relaxed); // Reset for next iteration
+//         }
+//     }
+
+//     let mut return_solution: Solution = Arc::try_unwrap(solution).unwrap().into_inner().unwrap();
+
+//     /* Recalculate local minima route distance to correct float error. This would not work if the float
+//     error did not have a consistent tendency to round down.*/
+//     return_solution.distance = get_solution_length(&map, &return_solution.route).0;
+//     return_solution
+// }
+
+
+/* Swap edges leaving v1 and v2 in the route. */
+fn two_opt_swap(route: &Vec<u32>, v1: usize, v2: usize) -> Vec<u32> {
+    let mut new_route = Vec::with_capacity(route.len());
+
+    // 1. Add route[0] to route[v1] in order
+    new_route.extend_from_slice(&route[0..=v1]);
+
+    // 2. Add route[v1+1] to route[v2] in reverse order
+    for i in (v1+1..=v2).rev() {
+        new_route.push(route[i]);
+    }
+
+    // 3. Add route[v2+1] to route[end] in order
+    if v2 < route.len() - 1 {
+        new_route.extend_from_slice(&route[v2+1..]);
+    }
+
+    return new_route;
 }
 
 /* Determines the incremental gain of swapping edges */
@@ -161,7 +246,7 @@ fn get_two_opt(map: &DistanceMap, solution_input: Solution) -> Solution {
 
                 if length_delta < 0.0 {
                     let mut sol = local_solution.lock().unwrap();
-                    two_opt_swap(&mut sol.route, i, j);
+                    sol.route = two_opt_swap(&sol.route, i, j);
                     sol.distance += length_delta;
                     local_improved.store(true, AtomicOrdering::Relaxed);
                     return; // Exit current iteration
