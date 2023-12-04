@@ -35,8 +35,8 @@ mod input_parsers;
 mod query;
 
 /* Round the number to avoid fp rounding errors. */
-fn round(number: f64, precision: f64) -> f64 {
-    (number * precision).round() / precision
+fn round(number: f64) -> f64 {
+    (number * 100000000.0).round() / 100000000.0
 }
 
 /* Returns the total length of a given solution. */
@@ -130,7 +130,7 @@ fn get_delta(map: &DistanceMap, solution: &Solution, i: &usize, j: &usize) -> f6
 
     let added = new_i_edge + new_j_edge - old_i_edge - old_j_edge;
 
-    added
+    round(added)
 }
 
 /* Local search algorithm swaps edges to find local minima solution from
@@ -151,26 +151,16 @@ fn get_two_opt(map: &DistanceMap, solution_input: Solution) -> Solution {
 
         // Parallel iteration
         (0..route_len).into_par_iter().for_each(|i| {
-            let mut count = 0;
             for j in i + 1..route_len {
                 let length_delta: f64 = {
                     let sol = local_solution.lock().unwrap();
                     get_delta(map, &sol, &i, &j)
                 };
 
-                if length_delta < -0.001 {
+                if length_delta < 0.0 {
                     let mut sol = local_solution.lock().unwrap();
                     sol.route = two_opt_swap(&sol.route, i, j);
-
-                    if count == 10 {
-                        sol.distance = get_solution_length(&map, &sol.route).0;
-                        count = 0;
-                    } else {
-                        sol.distance += length_delta;
-                        count += 1;
-                    }
-                    //sol.distance = get_solution_length(&map, &sol.route).0;
-                    //sol.distance += length_delta;
+                    sol.distance += length_delta;
                     local_improved.store(true, AtomicOrdering::Relaxed);
                     return; // Exit current iteration
                 }
@@ -184,9 +174,12 @@ fn get_two_opt(map: &DistanceMap, solution_input: Solution) -> Solution {
         }
     }
 
-    let mut final_solution = Arc::try_unwrap(solution).unwrap().into_inner().unwrap();
-    final_solution.distance = get_solution_length(&map, &final_solution.route).0;
-    final_solution
+    let mut return_solution: Solution = Arc::try_unwrap(solution).unwrap().into_inner().unwrap();
+
+    /* Recalculate local minima route distance to correct float error. This would not work if the float
+    error did not have a consistent tendency to round down.*/
+    return_solution.distance = get_solution_length(&map, &return_solution.route).0;
+    return_solution
 }
 
 /* Consider implementing and analyzing 3-opt. */
@@ -451,6 +444,10 @@ fn solve_tsp(filename: &String, usage: &query::Usage, time: u64) -> Solution {
         while start.elapsed() < max_duration {
             let random_solution: Solution = get_random_solution(&map);
             let new_solution: Solution = get_two_opt(&map, random_solution);
+
+            if round(new_solution.distance) != round(get_solution_length(&map, &new_solution.route).0) {
+                println!("get_two_opt is returning solutions with incorrect distances.")
+            }
             
             if new_solution.distance < bssf {
                 bssf = new_solution.distance;
@@ -494,22 +491,27 @@ fn get_map_from_file(filename: &String) -> DistanceMap {
 fn run_test() {
     let file_string: &String = &"points1000.json".to_string();
 
+    println!("Check1.");
+
+    let solution = solve_tsp(file_string, &query::Usage::SolveLocal, 0 as u64);
+
+
+    println!("Check2.");
+    
     let map = get_map_from_file(file_string);
 
-    for _ in 0..1 {
-        let random_solution: Solution = get_random_solution(&map);
-        let new_solution: Solution = get_two_opt(&map, random_solution);
 
-        assert_eq!(round(new_solution.distance, 1000000000000000000.0), round(get_solution_length(&map, &new_solution.route).0, 1000000000000000000.0));
-    }
+    println!("Check3.");
 
-    println!("passed 1 check.");
+    assert_eq!(solution.distance, get_solution_length(&map, &solution.route).0);
+
+    println!("Check4.");
 }
 
 
 fn main() {
 
-    if false {
+    if true {
         run_test();
         return;
     }
