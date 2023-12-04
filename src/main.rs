@@ -98,24 +98,26 @@ fn get_greedy(map: &DistanceMap) -> Solution {
     Solution { route: solution, distance: distance }
 }
 
-/* Swap edges leaving v1 and v2 in the route. */
-fn two_opt_swap(route: &Vec<u32>, v1: usize, v2: usize) -> Vec<u32> {
-    let mut new_route = Vec::with_capacity(route.len());
 
-    // 1. Add route[0] to route[v1] in order
-    new_route.extend_from_slice(&route[0..=v1]);
+/* Swap edges leaving v1 and v2 in the route in place. */
+fn two_opt_swap(route: &mut Vec<u32>, v1: usize, v2: usize) {
+    assert!(v1 < v2, "v1 must be less than v2");
 
-    // 2. Add route[v1+1] to route[v2] in reverse order
-    for i in (v1+1..=v2).rev() {
-        new_route.push(route[i]);
-    }
+    let mut temp_route = Vec::with_capacity(route.len());
 
-    // 3. Add route[v2+1] to route[end] in order
-    if v2 < route.len() - 1 {
-        new_route.extend_from_slice(&route[v2+1..]);
-    }
+    // 1. Take the route from the start to v1
+    temp_route.extend_from_slice(&route[0..=v1]);
 
-    return new_route;
+    // 2. Reverse the segment from v1+1 to v2 and add to the route
+    let mut reversed_segment = route[v1+1..=v2].to_vec();
+    reversed_segment.reverse();
+    temp_route.extend_from_slice(&reversed_segment);
+
+    // 3. Add the rest of the route from v2+1 to the end
+    temp_route.extend_from_slice(&route[v2+1..]);
+
+    // Copy the temp_route back to the original route
+    route.clone_from(&temp_route);
 }
 
 /* Determines the incremental gain of swapping edges */
@@ -159,7 +161,7 @@ fn get_two_opt(map: &DistanceMap, solution_input: Solution) -> Solution {
 
                 if length_delta < 0.0 {
                     let mut sol = local_solution.lock().unwrap();
-                    sol.route = two_opt_swap(&sol.route, i, j);
+                    two_opt_swap(&mut sol.route, i, j);
                     sol.distance += length_delta;
                     local_improved.store(true, AtomicOrdering::Relaxed);
                     return; // Exit current iteration
@@ -491,21 +493,19 @@ fn get_map_from_file(filename: &String) -> DistanceMap {
 fn run_test() {
     let file_string: &String = &"points1000.json".to_string();
 
-    println!("Check1.");
+    let time: Instant = Instant::now();
+
+    println!("Finding local solution...");
 
     let solution = solve_tsp(file_string, &query::Usage::SolveLocal, 0 as u64);
 
-
-    println!("Check2.");
+    println!("Local solution found!");
     
     let map = get_map_from_file(file_string);
 
-
-    println!("Check3.");
-
     assert_eq!(solution.distance, get_solution_length(&map, &solution.route).0);
 
-    println!("Check4.");
+    println!("Ran for {} seconds.", time.elapsed().as_secs() as f64);
 }
 
 
